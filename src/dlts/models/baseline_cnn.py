@@ -43,6 +43,8 @@ class ResidualBlock1D(nn.Module):
 class BaselineCNNClassifier(nn.Module):
     """Deep ResNet-1D baseline for sequence classification."""
 
+    is_foundation_model = False
+
     def __init__(
         self, input_dim: int, num_classes: int, width: int = 128, dropout: float = 0.1
     ) -> None:
@@ -78,9 +80,3 @@ class BaselineCNNClassifier(nn.Module):
         x = self.stem(x)
         x = self.res_blocks(x)
         return self.classifier(x)
-
-    def freeze_backbone(self) -> None:
-        pass
-
-    def unfreeze_last_n_encoder_layers(self, _n_layers: int) -> None:
-        pass

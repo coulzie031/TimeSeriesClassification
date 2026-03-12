@@ -55,7 +55,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--model.device_map", type=str, default=None)
 
     parser.add_argument(
-        "--loss.name", type=str, default="focal", choices=["weighted_ce", "focal"]
+        "--loss.name", type=str, default="weighted_ce", choices=["weighted_ce", "focal"]
     )
     parser.add_argument("--loss.focal_gamma", type=float, default=2.0)
 
@@ -90,10 +90,11 @@ def set_seed(seed: int) -> None:
 
 
 def get_device(device_arg: str) -> torch.device:
-    if device_arg == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
-    if device_arg == "mps" and torch.backends.mps.is_available():
-        return torch.device("mps")
+    if device_arg != "cpu":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
     return torch.device("cpu")
 
 
@@ -154,7 +155,7 @@ def make_scheduler(
 
 
 def evaluate(
-    model: nn.Module, loader: DataLoader, device: torch.device
+    model: nn.Module, loader: DataLoader, device: torch.device, class_weights: np.ndarray | None = None
 ) -> dict[str, float]:
     model.eval()
     all_probs = []
@@ -168,7 +169,7 @@ def evaluate(
             all_targets.append(y.numpy())
     probs_np = np.concatenate(all_probs, axis=0)
     y_np = np.concatenate(all_targets, axis=0)
-    return classification_metrics(y_np, probs_np)
+    return classification_metrics(y_np, probs_np, class_weights=class_weights)
 
 
 def run_stage(
@@ -182,6 +183,7 @@ def run_stage(
     head_lr_scale: float = 1.0,
     grad_clip: float = 1.0,
     checkpoint_path: Path | None = None,
+    class_weights: np.ndarray | None = None,
 ) -> float:
     """Returns best val macro_f1 achieved during this stage."""
     optimizer = make_optimizer(model, stage_cfg, head_lr_scale=head_lr_scale)
@@ -208,10 +210,9 @@ def run_stage(
             scheduler.step()
             losses.append(float(loss.detach().cpu()))
 
-        val_metrics = evaluate(model, val_loader, device)
+        val_metrics = evaluate(model, val_loader, device, class_weights=class_weights)
         log_dict = {f"val/{k}": v for k, v in val_metrics.items()}
         log_dict[f"{stage_name}/train_loss"] = float(np.mean(losses))
-        log_dict[f"{stage_name}/epoch"] = epoch + 1
         log_dict[f"{stage_name}/lr"] = scheduler.get_last_lr()[0]
         wandb.log(log_dict)
 
@@ -227,7 +228,8 @@ def run_stage(
             f"loss={log_dict[f'{stage_name}/train_loss']:.4f} "
             f"val_f1={macro_f1:.4f} "
             f"val_bal_acc={val_metrics['balanced_accuracy']:.4f} "
-            f"val_auroc={val_metrics['macro_auroc_ovr']:.4f} "
+            f"val_pr_auc={val_metrics['macro_pr_auc']:.4f} "
+            f"val_logloss={val_metrics['log_loss']:.4f} "
             f"best_val_f1={best_f1:.4f}"
         )
         model.train()
@@ -258,12 +260,12 @@ def main() -> None:
         f"{len(y_test)} test  (val_fraction={val_frac})"
     )
 
-    train_ds = LSSTDataset(X_train, y_train)
-    val_ds = LSSTDataset(X_val, y_val)
-    test_ds = LSSTDataset(X_test, y_test)
+    train_ds = LSSTDataset(X_train, y_train, device=device)
+    val_ds = LSSTDataset(X_val, y_val, device=device)
+    test_ds = LSSTDataset(X_test, y_test, device=device)
     loader_kwargs = dict(
-        num_workers=cfg.num_workers,
-        pin_memory=(device.type == "cuda"),
+        num_workers=0, # Hardcoded to 0 because data is now entirely on GPU
+        pin_memory=False, # Not needed if data is already on device
     )
     train_loader = DataLoader(
         train_ds,
@@ -303,6 +305,8 @@ def main() -> None:
     class_weights = inverse_frequency_class_weights(
         y_tensor, num_classes=num_classes
     ).to(device)
+    class_weights_np = class_weights.cpu().numpy()
+    
     if cfg.loss.name == "weighted_ce":
         criterion: nn.Module = nn.CrossEntropyLoss(weight=class_weights)
     else:
@@ -321,58 +325,86 @@ def main() -> None:
     stage1_ckpt = ckpt_dir / f"{cfg.model.name}_stage1_best.pt"
     stage2_ckpt = ckpt_dir / f"{cfg.model.name}_stage2_best.pt"
 
-    # ── Stage 1: frozen backbone, head only ───────────────────────────
-    model.freeze_backbone()
-    run_stage(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        device=device,
-        criterion=criterion,
-        stage_name="stage1",
-        stage_cfg=StageConfig(
-            epochs=cfg.stage1.epochs,
-            lr=cfg.stage1.lr,
-            weight_decay=cfg.stage1.weight_decay,
-        ),
-        head_lr_scale=1.0,
-        grad_clip=cfg.grad_clip,
-        checkpoint_path=stage1_ckpt,
-    )
+    if getattr(model, "is_foundation_model", False):
+        print(f"\n>>> [FOUNDATION] Adapting {cfg.model.name} via 2-Stage LP-FT")
+        
+        # ── Stage 1: Linear Probing ──────────────────────────────────
+        print(">>> Stage 1: Freezing backbone for head-only warmup...")
+        model.freeze_backbone()
+        run_stage(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+            criterion=criterion,
+            stage_name="stage1",
+            stage_cfg=StageConfig(
+                epochs=cfg.stage1.epochs,
+                lr=cfg.stage1.lr,
+                weight_decay=cfg.stage1.weight_decay,
+            ),
+            head_lr_scale=1.0,
+            grad_clip=cfg.grad_clip,
+            checkpoint_path=stage1_ckpt,
+            class_weights=class_weights_np,
+        )
 
-    # ── Stage 2: unfreeze last N layers, discriminative LR ────────────
-    model.unfreeze_last_n_encoder_layers(cfg.model.unfreeze_last_n)
-    best_val_f1 = run_stage(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        device=device,
-        criterion=criterion,
-        stage_name="stage2",
-        stage_cfg=StageConfig(
-            epochs=cfg.stage2.epochs,
-            lr=cfg.stage2.lr,
-            weight_decay=cfg.stage2.weight_decay,
-        ),
-        head_lr_scale=cfg.stage2.head_lr_scale,
-        grad_clip=cfg.grad_clip,
-        checkpoint_path=stage2_ckpt,
-    )
+        # ── Stage 2: Fine-Tuning ─────────────────────────────────────
+        print(f">>> Stage 2: Unfreezing last {cfg.model.unfreeze_last_n} layers...")
+        model.unfreeze_last_n_encoder_layers(cfg.model.unfreeze_last_n)
+        best_val_f1 = run_stage(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+            criterion=criterion,
+            stage_name="stage2",
+            stage_cfg=StageConfig(
+                epochs=cfg.stage2.epochs,
+                lr=cfg.stage2.lr,
+                weight_decay=cfg.stage2.weight_decay,
+            ),
+            head_lr_scale=cfg.stage2.head_lr_scale,
+            grad_clip=cfg.grad_clip,
+            checkpoint_path=stage2_ckpt,
+            class_weights=class_weights_np,
+        )
+    else:
+        print(f"\n>>> [SCRATCH] Training {cfg.model.name} end-to-end")
+        best_val_f1 = run_stage(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            device=device,
+            criterion=criterion,
+            stage_name="train",
+            stage_cfg=StageConfig(
+                epochs=cfg.stage1.epochs,
+                lr=cfg.stage1.lr,
+                weight_decay=cfg.stage1.weight_decay,
+            ),
+            head_lr_scale=1.0,
+            grad_clip=cfg.grad_clip,
+            checkpoint_path=stage1_ckpt,
+            class_weights=class_weights_np,
+        )
 
     # ── Final eval on held-out test set ────────────────────────────────
     if stage2_ckpt.exists():
         model.load_state_dict(torch.load(stage2_ckpt, map_location=device))
-        print(f"Loaded best stage-2 checkpoint (best_val_f1={best_val_f1:.4f})")
+        print(f"Loaded best Stage 2 checkpoint (val_f1={best_val_f1:.4f})")
     elif stage1_ckpt.exists():
         model.load_state_dict(torch.load(stage1_ckpt, map_location=device))
-        print("No stage-2 checkpoint; loaded stage-1.")
+        print(f"Loaded best checkpoint (val_f1={best_val_f1:.4f})")
 
-    test_metrics = evaluate(model, test_loader, device)
+    test_metrics = evaluate(model, test_loader, device, class_weights=class_weights_np)
     wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
     print(
         f"Test  | f1={test_metrics['macro_f1']:.4f} "
         f"bal_acc={test_metrics['balanced_accuracy']:.4f} "
-        f"auroc={test_metrics['macro_auroc_ovr']:.4f}"
+        f"pr_auc={test_metrics['macro_pr_auc']:.4f} "
+        f"logloss={test_metrics['log_loss']:.4f} "
+        f"brier={test_metrics['brier_score']:.4f}"
     )
     wandb.finish()
 

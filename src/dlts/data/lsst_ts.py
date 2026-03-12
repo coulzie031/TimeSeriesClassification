@@ -15,18 +15,15 @@ class TSMetadata:
     class_labels: list[int]
 
 
-def _robust_channel_zscore(values: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    med = np.median(values, axis=0, keepdims=True)
-    mad = np.median(np.abs(values - med), axis=0, keepdims=True)
+def _normalize_dataset(X: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """Vectorized robust channel z-score normalization over the entire dataset."""
+    X = X.astype(np.float32)
+    # X shape is (batch, seq_len, channels). We normalize over seq_len (axis=1)
+    med = np.median(X, axis=1, keepdims=True)
+    mad = np.median(np.abs(X - med), axis=1, keepdims=True)
     scale = np.maximum(mad * 1.4826, eps)
-    return (values - med) / scale
+    return (X - med) / scale
 
-
-def _normalize_dataset(X: np.ndarray) -> np.ndarray:
-    out = np.empty_like(X, dtype=np.float32)
-    for i in range(X.shape[0]):
-        out[i] = _robust_channel_zscore(X[i].astype(np.float32))
-    return out
 
 
 def _encode_labels(
@@ -64,9 +61,12 @@ def load_lsst(
 
 
 class LSSTDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
-    def __init__(self, X: np.ndarray, y: np.ndarray) -> None:
+    def __init__(self, X: np.ndarray, y: np.ndarray, device: torch.device | None = None) -> None:
         self.X = torch.from_numpy(X)
         self.y = torch.from_numpy(y)
+        if device is not None:
+            self.X = self.X.to(device)
+            self.y = self.y.to(device)
 
     def __len__(self) -> int:
         return self.y.shape[0]

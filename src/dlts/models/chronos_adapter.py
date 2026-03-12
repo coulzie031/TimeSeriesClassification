@@ -40,6 +40,8 @@ class CrossChannelAttention(nn.Module):
 class ChronosAdapterClassifier(nn.Module):
     """Chronos-2 encoder adapted for LSST classification with cross-channel attention."""
 
+    is_foundation_model = True
+
     def __init__(
         self,
         num_classes: int,

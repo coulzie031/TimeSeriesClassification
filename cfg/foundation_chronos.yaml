@@ -7,8 +7,7 @@ model:
   unfreeze_last_n: 3
 
 loss:
-  name: focal
-  focal_gamma: 2.0
+  name: weighted_ce
 
 stage1:
   epochs: 15

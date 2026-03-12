@@ -18,8 +18,7 @@ model:
   chronos_model_id: amazon/chronos-2
 
 loss:
-  name: focal
-  focal_gamma: 2.0
+  name: weighted_ce
 
 stage1:
   epochs: 10
