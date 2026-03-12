@@ -25,7 +25,11 @@ class CrossChannelAttention(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, 
+            num_layers=n_layers, 
+            enable_nested_tensor=False
+        )
         self.pool_query = nn.Parameter(torch.randn(1, 1, hidden_size) * 0.02)
 
     def forward(self, channel_tokens: torch.Tensor) -> torch.Tensor:

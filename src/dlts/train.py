@@ -166,7 +166,7 @@ def evaluate(
             logits = model(x)
             probs = F.softmax(logits, dim=-1)
             all_probs.append(probs.cpu().numpy())
-            all_targets.append(y.numpy())
+            all_targets.append(y.cpu().numpy())
     probs_np = np.concatenate(all_probs, axis=0)
     y_np = np.concatenate(all_targets, axis=0)
     return classification_metrics(y_np, probs_np, class_weights=class_weights)
