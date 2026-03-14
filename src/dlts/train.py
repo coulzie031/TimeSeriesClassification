@@ -57,6 +57,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument(
         "--loss.name", type=str, default="weighted_ce", choices=["weighted_ce", "focal"]
     )
+    parser.add_argument("--loss.label_smoothing", type=float, default=0.1)
     parser.add_argument("--loss.focal_gamma", type=float, default=2.0)
 
     # Stage 1: head only (frozen backbone)
@@ -308,7 +309,10 @@ def main() -> None:
     class_weights_np = class_weights.cpu().numpy()
     
     if cfg.loss.name == "weighted_ce":
-        criterion: nn.Module = nn.CrossEntropyLoss(weight=class_weights)
+        criterion: nn.Module = nn.CrossEntropyLoss(
+            weight=class_weights, 
+            label_smoothing=cfg.loss.label_smoothing
+        )
     else:
         criterion = FocalLoss(alpha=class_weights, gamma=cfg.loss.focal_gamma)
 

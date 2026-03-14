@@ -8,6 +8,7 @@ model:
 
 loss:
   name: weighted_ce
+  label_smoothing: 0.1
 
 stage1:
   epochs: 15
