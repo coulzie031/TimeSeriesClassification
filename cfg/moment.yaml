@@ -1,0 +1,22 @@
+# MOMENT foundation model adaptation.
+model:
+  name: moment_tsfm
+  dropout: 0.1
+  unfreeze_last_n: 3
+
+loss:
+  name: weighted_ce
+
+stage1:
+  epochs: 15
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+
+stage2:
+  epochs: 30
+  lr: 1.0e-5
+  weight_decay: 1.0e-4
+  head_lr_scale: 8.0
+
+wandb:
+  run_name: moment_adaptation

@@ -44,7 +44,7 @@ def build_parser() -> ArgumentParser:
         "--model.name",
         type=str,
         default="baseline_cnn",
-        choices=["baseline_cnn", "chronos_tsfm"],
+        choices=["baseline_cnn", "chronos_tsfm", "moment_tsfm"],
     )
     parser.add_argument("--model.dropout", type=float, default=0.1)
     parser.add_argument("--model.unfreeze_last_n", type=int, default=2)

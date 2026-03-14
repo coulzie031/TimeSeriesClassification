@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from chronos import Chronos2Pipeline
+from einops import rearrange, einsum
 from torch import nn
 
 
@@ -35,10 +36,16 @@ class CrossChannelAttention(nn.Module):
     def forward(self, channel_tokens: torch.Tensor) -> torch.Tensor:
         """(B, C, H) -> (B, H)"""
         h = self.encoder(channel_tokens)
-        query = self.pool_query.expand(h.size(0), -1, -1)
-        attn_scores = torch.bmm(query, h.transpose(1, 2))
+        
+        # Squeeze pool_query from (1, 1, H) to (H,)
+        query = self.pool_query.squeeze()
+        
+        # Dot product query (H) with each channel token (B, C, H) -> channel scores (B, C)
+        attn_scores = einsum(query, h, 'h_dim, b c h_dim -> b c')
         attn_weights = torch.softmax(attn_scores / (h.size(-1) ** 0.5), dim=-1)
-        return torch.bmm(attn_weights, h).squeeze(1)
+        
+        # Weighted sum of channel tokens (B, C, H) using weights (B, C) -> (B, H)
+        return einsum(attn_weights, h, 'b c, b c h_dim -> b h_dim')
 
 
 class ChronosAdapterClassifier(nn.Module):
@@ -89,16 +96,15 @@ class ChronosAdapterClassifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bsz, seq_len, n_channels = x.shape
-        context = x.transpose(1, 2).float()  # (B, C, T)
 
         model_device = next(self.chronos_model.parameters()).device
 
-        # Batch all channels into one encode call: (B, C, T) → (B*C, T)
-        flat = context.reshape(bsz * n_channels, seq_len).to(model_device)
+        # Batch all channels into one encode call: (B, T, C) → (B*C, T)
+        flat = rearrange(x, 'b t c -> (b c) t').float().to(model_device)
         encoder_outputs, _, _, num_ctx_patches = self.chronos_model.encode(flat)
         hidden = encoder_outputs.last_hidden_state  # (B*C, P, H)
         pooled = hidden[:, :num_ctx_patches, :].mean(dim=1)  # (B*C, H)
-        z = pooled.reshape(bsz, n_channels, -1).to(x.device)  # (B, C, H)
+        z = rearrange(pooled, '(b c) h -> b c h', b=bsz).to(x.device)  # (B, C, H)
 
         z = self.channel_attention(z)
         return self.classifier(z)

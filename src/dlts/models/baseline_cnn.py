@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from einops import rearrange
 from torch import nn
 
 
@@ -75,7 +76,7 @@ class BaselineCNNClassifier(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Expected input shape: (batch_size, sequence_length, channels)
         # PyTorch Conv1d expects: (batch_size, channels, sequence_length)
-        x = x.transpose(1, 2)
+        x = rearrange(x, 'b s c -> b c s')
         
         x = self.stem(x)
         x = self.res_blocks(x)

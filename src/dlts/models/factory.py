@@ -4,6 +4,7 @@ from torch import nn
 
 from dlts.models.baseline_cnn import BaselineCNNClassifier
 from dlts.models.chronos_adapter import ChronosAdapterClassifier
+from dlts.models.moment_adapter import MomentAdapterClassifier
 
 
 def build_model(
@@ -27,6 +28,11 @@ def build_model(
             num_classes=num_classes,
             chronos_model_id=chronos_model_id,
             device_map=device_map,
+            dropout=dropout,
+        )
+    if model_name == "moment_tsfm":
+        return MomentAdapterClassifier(
+            num_classes=num_classes,
             dropout=dropout,
         )
     raise ValueError(f"Unknown model_name={model_name!r}")
