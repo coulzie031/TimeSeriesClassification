@@ -27,25 +27,23 @@ class CrossChannelAttention(nn.Module):
             norm_first=True,
         )
         self.encoder = nn.TransformerEncoder(
-            encoder_layer, 
-            num_layers=n_layers, 
-            enable_nested_tensor=False
+            encoder_layer, num_layers=n_layers, enable_nested_tensor=False
         )
         self.pool_query = nn.Parameter(torch.randn(1, 1, hidden_size) * 0.02)
 
     def forward(self, channel_tokens: torch.Tensor) -> torch.Tensor:
         """(B, C, H) -> (B, H)"""
         h = self.encoder(channel_tokens)
-        
+
         # Squeeze pool_query from (1, 1, H) to (H,)
         query = self.pool_query.squeeze()
-        
+
         # Dot product query (H) with each channel token (B, C, H) -> channel scores (B, C)
-        attn_scores = einsum(query, h, 'h_dim, b c h_dim -> b c')
+        attn_scores = einsum(query, h, "h_dim, b c h_dim -> b c")
         attn_weights = torch.softmax(attn_scores / (h.size(-1) ** 0.5), dim=-1)
-        
+
         # Weighted sum of channel tokens (B, C, H) using weights (B, C) -> (B, H)
-        return einsum(attn_weights, h, 'b c, b c h_dim -> b h_dim')
+        return einsum(attn_weights, h, "b c, b c h_dim -> b h_dim")
 
 
 class ChronosAdapterClassifier(nn.Module):
@@ -100,11 +98,11 @@ class ChronosAdapterClassifier(nn.Module):
         model_device = next(self.chronos_model.parameters()).device
 
         # Batch all channels into one encode call: (B, T, C) → (B*C, T)
-        flat = rearrange(x, 'b t c -> (b c) t').float().to(model_device)
+        flat = rearrange(x, "b t c -> (b c) t").float().to(model_device)
         encoder_outputs, _, _, num_ctx_patches = self.chronos_model.encode(flat)
         hidden = encoder_outputs.last_hidden_state  # (B*C, P, H)
         pooled = hidden[:, :num_ctx_patches, :].mean(dim=1)  # (B*C, H)
-        z = rearrange(pooled, '(b c) h -> b c h', b=bsz).to(x.device)  # (B, C, H)
+        z = rearrange(pooled, "(b c) h -> b c h", b=bsz).to(x.device)  # (B, C, H)
 
         z = self.channel_attention(z)
         return self.classifier(z)

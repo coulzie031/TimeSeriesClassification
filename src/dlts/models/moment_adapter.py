@@ -20,8 +20,10 @@ class MomentAdapterClassifier(nn.Module):
         super().__init__()
 
         # Load the community-supported transformers-compatible MOMENT model
-        self.moment_model = AutoModel.from_pretrained(moment_model_id, trust_remote_code=True)
-        
+        self.moment_model = AutoModel.from_pretrained(
+            moment_model_id, trust_remote_code=True
+        )
+
         # MOMENT-large provides a 1024-dimensional embedding
         hidden_size = 1024
 
@@ -48,7 +50,7 @@ class MomentAdapterClassifier(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Expected input shape: (batch_size, sequence_length, channels)
         # MOMENT expects: (batch_size, channels, sequence_length)
-        x_moment = rearrange(x, 'b s c -> b c s').float()
+        x_moment = rearrange(x, "b s c -> b c s").float()
 
         # Hack to silence PyTorch gradient checkpointing warning during Stage 1 (frozen backbone)
         if self.training and self.moment_model.is_gradient_checkpointing:

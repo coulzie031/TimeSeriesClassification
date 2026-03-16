@@ -25,26 +25,21 @@ def classification_metrics(
     # Excellent for evaluating probability calibration
     y_true_one_hot = np.zeros_like(probs)
     y_true_one_hot[np.arange(y_true.size), y_true] = 1
-    
+
     if sample_weight is not None:
-        brier_score = np.average(np.sum((probs - y_true_one_hot) ** 2, axis=1), weights=sample_weight)
+        brier_score = np.average(
+            np.sum((probs - y_true_one_hot) ** 2, axis=1), weights=sample_weight
+        )
     else:
         brier_score = np.mean(np.sum((probs - y_true_one_hot) ** 2, axis=1))
 
     # 2. Log-Loss (Cross-Entropy) - PLAsTiCC challenge standard
     # Heavily penalizes confident incorrect predictions (eps prevents log(0))
-    # We use a try-except to handle cases where a batch might be missing some classes
-    try:
-        logloss = float(log_loss(y_true, probs, sample_weight=sample_weight))
-    except ValueError:
-        logloss = float("nan")
+    logloss = float(log_loss(y_true, probs, sample_weight=sample_weight))
 
     # 3. Macro PR-AUC (Average Precision)
     # Better than AUROC for highly imbalanced data as it focuses on minority class P/R
-    try:
-        pr_auc = float(average_precision_score(y_true_one_hot, probs, average="macro"))
-    except ValueError:
-        pr_auc = float("nan")
+    pr_auc = float(average_precision_score(y_true_one_hot, probs, average="macro"))
 
     return {
         "macro_f1": float(f1_score(y_true, pred, average="macro")),
@@ -53,4 +48,3 @@ def classification_metrics(
         "log_loss": logloss,
         "macro_pr_auc": pr_auc,
     }
-

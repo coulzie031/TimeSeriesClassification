@@ -156,12 +156,18 @@ def make_scheduler(
 
 
 def evaluate(
-    model: nn.Module, loader: DataLoader, device: torch.device, class_weights: np.ndarray | None = None
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    class_weights: np.ndarray | None = None,
 ) -> dict[str, float]:
     model.eval()
     all_probs = []
     all_targets = []
-    with torch.no_grad(), torch.autocast(device_type=device.type, enabled=device.type in ["cuda", "mps"]):
+    with (
+        torch.no_grad(),
+        torch.autocast(device_type=device.type, enabled=device.type in ["cuda", "mps"]),
+    ):
         for x, y in loader:
             x = x.to(device)
             logits = model(x)
@@ -203,17 +209,19 @@ def run_stage(
             x = x.to(device)
             y = y.to(device)
             optimizer.zero_grad(set_to_none=True)
-            
-            with torch.autocast(device_type=device.type, enabled=device.type in ["cuda", "mps"]):
+
+            with torch.autocast(
+                device_type=device.type, enabled=device.type in ["cuda", "mps"]
+            ):
                 logits = model(x)
                 loss = criterion(logits, y)
-                
+
             scaler.scale(loss).backward()
-            
+
             if grad_clip > 0:
                 scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                
+
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
@@ -273,8 +281,8 @@ def main() -> None:
     val_ds = LSSTDataset(X_val, y_val, device=device)
     test_ds = LSSTDataset(X_test, y_test, device=device)
     loader_kwargs = dict(
-        num_workers=0, # Hardcoded to 0 because data is now entirely on GPU
-        pin_memory=False, # Not needed if data is already on device
+        num_workers=0,  # Hardcoded to 0 because data is now entirely on GPU
+        pin_memory=False,  # Not needed if data is already on device
     )
     train_loader = DataLoader(
         train_ds,
@@ -315,11 +323,10 @@ def main() -> None:
         y_tensor, num_classes=num_classes
     ).to(device)
     class_weights_np = class_weights.cpu().numpy()
-    
+
     if cfg.loss.name == "weighted_ce":
         criterion: nn.Module = nn.CrossEntropyLoss(
-            weight=class_weights, 
-            label_smoothing=cfg.loss.label_smoothing
+            weight=class_weights, label_smoothing=cfg.loss.label_smoothing
         )
     else:
         criterion = FocalLoss(alpha=class_weights, gamma=cfg.loss.focal_gamma)
@@ -339,7 +346,7 @@ def main() -> None:
 
     if getattr(model, "is_foundation_model", False):
         print(f"\n>>> [FOUNDATION] Adapting {cfg.model.name} via 2-Stage LP-FT")
-        
+
         # ── Stage 1: Linear Probing ──────────────────────────────────
         print(">>> Stage 1: Freezing backbone for head-only warmup...")
         model.freeze_backbone()
