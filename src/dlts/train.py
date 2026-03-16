@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,16 +41,28 @@ def build_parser() -> ArgumentParser:
 
     parser.add_argument("--data.normalize", type=bool, default=True)
     parser.add_argument("--data.val_fraction", type=float, default=0.2)
+    parser.add_argument("--data.augment", type=bool, default=True)
 
     parser.add_argument(
         "--model.name",
         type=str,
-        default="baseline_cnn",
-        choices=["baseline_cnn", "chronos", "moment"],
+        default="inception_time",
+        choices=["inception_time", "patch_tst", "units", "chronos", "moment"],
     )
     parser.add_argument("--model.dropout", type=float, default=0.2)
     parser.add_argument("--model.unfreeze_last_n", type=int, default=2)
-    parser.add_argument("--model.baseline_width", type=int, default=128)
+    # CNN models
+    parser.add_argument("--model.inception_nb_filters", type=int, default=32)
+    # Patch-based models (PatchTST, UniTS)
+    parser.add_argument("--model.seq_len", type=int, default=36)
+    parser.add_argument("--model.patch_len", type=int, default=4)
+    parser.add_argument("--model.stride", type=int, default=4)
+    parser.add_argument("--model.d_model", type=int, default=64)
+    parser.add_argument("--model.n_heads", type=int, default=4)
+    parser.add_argument("--model.n_layers", type=int, default=3)
+    parser.add_argument("--model.d_ff", type=int, default=256)
+    parser.add_argument("--model.dlo_rank", type=int, default=8)
+    # Foundation models
     parser.add_argument(
         "--model.chronos_model_id", type=str, default="amazon/chronos-2"
     )
@@ -316,9 +329,9 @@ def main() -> None:
         f"{len(y_test)} test  (val_fraction={val_frac})"
     )
 
-    train_ds = LSSTDataset(X_train, y_train, device=device)
-    val_ds = LSSTDataset(X_val, y_val, device=device)
-    test_ds = LSSTDataset(X_test, y_test, device=device)
+    train_ds = LSSTDataset(X_train, y_train, device=device, augment=cfg.data.augment)
+    val_ds   = LSSTDataset(X_val,   y_val,   device=device, augment=False)
+    test_ds  = LSSTDataset(X_test,  y_test,  device=device, augment=False)
     # Data tensors are preloaded onto `device`, so worker processes are only useful on CPU.
     effective_num_workers = cfg.num_workers if device.type == "cpu" else 0
     loader_kwargs = dict(
@@ -353,7 +366,15 @@ def main() -> None:
         input_dim=input_dim,
         num_classes=num_classes,
         dropout=cfg.model.dropout,
-        baseline_width=cfg.model.baseline_width,
+        inception_nb_filters=cfg.model.inception_nb_filters,
+        seq_len=cfg.model.seq_len,
+        patch_len=cfg.model.patch_len,
+        stride=cfg.model.stride,
+        d_model=cfg.model.d_model,
+        n_heads=cfg.model.n_heads,
+        n_layers=cfg.model.n_layers,
+        d_ff=cfg.model.d_ff,
+        dlo_rank=cfg.model.dlo_rank,
         chronos_model_id=cfg.model.chronos_model_id,
         device_map=model_device_map,
     ).to(device)
@@ -471,6 +492,31 @@ def main() -> None:
         f"bal_acc={test_metrics['balanced_accuracy']:.4f} "
         f"logloss={test_metrics['log_loss']:.4f}"
     )
+
+    # ── Save sidecar JSON for ensemble ────────────────────────────────
+    # val_macro_f1 is used (not test) for ensemble weighting to avoid leakage.
+    best_ckpt = (
+        stage2_ckpt if (stage2_saved and stage2_ckpt.exists()) else
+        stage1_ckpt if (stage1_saved and stage1_ckpt.exists()) else
+        None
+    )
+    run_record = {
+        "model_name":            cfg.model.name,
+        "run_name":              cfg.wandb.run_name,
+        "checkpoint":            str(best_ckpt) if best_ckpt else None,
+        "val_macro_f1":          best_val_f1,
+        "test_macro_f1":         test_metrics["macro_f1"],
+        "test_accuracy":         test_metrics["accuracy"],
+        "test_balanced_accuracy": test_metrics["balanced_accuracy"],
+        "model_cfg":             {k: v for k, v in cfg.as_dict().get("model", {}).items()},
+        "data_cfg":              {k: v for k, v in cfg.as_dict().get("data", {}).items()},
+    }
+    sidecar_path = ckpt_dir / f"{cfg.model.name}_run_metrics.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(sidecar_path, "w") as f:
+        json.dump(run_record, f, indent=2)
+    print(f"Run metrics saved -> {sidecar_path}")
+
     wandb.finish()
 
 
