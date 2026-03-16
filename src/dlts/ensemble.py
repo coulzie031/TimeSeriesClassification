@@ -109,7 +109,6 @@ def _load_member(record: dict, device: torch.device) -> torch.nn.Module:
         input_dim=input_dim,
         num_classes=num_classes,
         dropout=mc.get("dropout", 0.1),
-        baseline_width=mc.get("baseline_width", 128),
         inception_nb_filters=mc.get("inception_nb_filters", 32),
         seq_len=mc.get("seq_len", 36),
         patch_len=mc.get("patch_len", 4),
