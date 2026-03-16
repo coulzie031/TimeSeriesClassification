@@ -31,7 +31,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--cfg", action="config")
 
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--grad_clip", type=float, default=1.0)
@@ -91,12 +91,40 @@ def set_seed(seed: int) -> None:
 
 
 def get_device(device_arg: str) -> torch.device:
-    if device_arg != "cpu":
+    device_str = device_arg.lower()
+
+    if device_str == "auto":
         if torch.cuda.is_available():
             return torch.device("cuda")
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return torch.device("mps")
-    return torch.device("cpu")
+        return torch.device("cpu")
+
+    if device_str == "cpu":
+        return torch.device("cpu")
+
+    if device_str == "mps":
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        raise ValueError("Requested device 'mps' but MPS is not available.")
+
+    if device_str.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise ValueError(
+                f"Requested device '{device_arg}' but CUDA is not available."
+            )
+        parsed_device = torch.device(device_arg)
+        if (
+            parsed_device.index is not None
+            and parsed_device.index >= torch.cuda.device_count()
+        ):
+            raise ValueError(
+                f"Requested device '{device_arg}' but only "
+                f"{torch.cuda.device_count()} CUDA device(s) are available."
+            )
+        return parsed_device
+
+    raise ValueError(f"Unsupported device string: {device_arg!r}")
 
 
 def make_optimizer(
@@ -191,8 +219,8 @@ def run_stage(
     grad_clip: float = 1.0,
     checkpoint_path: Path | None = None,
     class_weights: np.ndarray | None = None,
-) -> float:
-    """Returns best val macro_f1 achieved during this stage."""
+) -> tuple[float, bool]:
+    """Returns (best val macro_f1, checkpoint_saved_for_this_stage)."""
     optimizer = make_optimizer(model, stage_cfg, head_lr_scale=head_lr_scale)
     scheduler = make_scheduler(
         optimizer,
@@ -202,6 +230,7 @@ def run_stage(
     )
     scaler = torch.amp.GradScaler(device.type, enabled=device.type in ["cuda", "mps"])
     best_f1 = 0.0
+    saved_checkpoint = False
     model.train()
     for epoch in range(stage_cfg.epochs):
         losses = []
@@ -239,6 +268,7 @@ def run_stage(
             if checkpoint_path is not None:
                 checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(model.state_dict(), checkpoint_path)
+                saved_checkpoint = True
 
         print(
             f"[{stage_name}] epoch={epoch + 1}/{stage_cfg.epochs} "
@@ -251,7 +281,7 @@ def run_stage(
         )
         model.train()
 
-    return best_f1
+    return best_f1, saved_checkpoint
 
 
 def main() -> None:
@@ -280,8 +310,10 @@ def main() -> None:
     train_ds = LSSTDataset(X_train, y_train, device=device)
     val_ds = LSSTDataset(X_val, y_val, device=device)
     test_ds = LSSTDataset(X_test, y_test, device=device)
+    # Data tensors are preloaded onto `device`, so worker processes are only useful on CPU.
+    effective_num_workers = cfg.num_workers if device.type == "cpu" else 0
     loader_kwargs = dict(
-        num_workers=0,  # Hardcoded to 0 because data is now entirely on GPU
+        num_workers=effective_num_workers,
         pin_memory=False,  # Not needed if data is already on device
     )
     train_loader = DataLoader(
@@ -343,6 +375,8 @@ def main() -> None:
     ckpt_dir = Path(cfg.checkpoint_dir)
     stage1_ckpt = ckpt_dir / f"{cfg.model.name}_stage1_best.pt"
     stage2_ckpt = ckpt_dir / f"{cfg.model.name}_stage2_best.pt"
+    stage1_saved = False
+    stage2_saved = False
 
     if getattr(model, "is_foundation_model", False):
         print(f"\n>>> [FOUNDATION] Adapting {cfg.model.name} via 2-Stage LP-FT")
@@ -350,7 +384,7 @@ def main() -> None:
         # ── Stage 1: Linear Probing ──────────────────────────────────
         print(">>> Stage 1: Freezing backbone for head-only warmup...")
         model.freeze_backbone()
-        run_stage(
+        _, stage1_saved = run_stage(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -371,7 +405,7 @@ def main() -> None:
         # ── Stage 2: Fine-Tuning ─────────────────────────────────────
         print(f">>> Stage 2: Unfreezing last {cfg.model.unfreeze_last_n} layers...")
         model.unfreeze_last_n_encoder_layers(cfg.model.unfreeze_last_n)
-        best_val_f1 = run_stage(
+        best_val_f1, stage2_saved = run_stage(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -390,7 +424,7 @@ def main() -> None:
         )
     else:
         print(f"\n>>> [SCRATCH] Training {cfg.model.name} end-to-end")
-        best_val_f1 = run_stage(
+        best_val_f1, stage1_saved = run_stage(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
@@ -409,12 +443,14 @@ def main() -> None:
         )
 
     # ── Final eval on held-out test set ────────────────────────────────
-    if stage2_ckpt.exists():
+    if stage2_saved and stage2_ckpt.exists():
         model.load_state_dict(torch.load(stage2_ckpt, map_location=device))
         print(f"Loaded best Stage 2 checkpoint (val_f1={best_val_f1:.4f})")
-    elif stage1_ckpt.exists():
+    elif stage1_saved and stage1_ckpt.exists():
         model.load_state_dict(torch.load(stage1_ckpt, map_location=device))
         print(f"Loaded best checkpoint (val_f1={best_val_f1:.4f})")
+    else:
+        print("No checkpoint from this run was saved; evaluating current model weights.")
 
     test_metrics = evaluate(model, test_loader, device, class_weights=class_weights_np)
     wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
