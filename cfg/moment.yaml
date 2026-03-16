@@ -2,7 +2,7 @@
 batch_size: 32
 
 model:
-  name: moment_tsfm
+  name: moment
   dropout: 0.1
   unfreeze_last_n: 3
 

@@ -2,7 +2,7 @@
 batch_size: 64
 
 model:
-  name: chronos_tsfm
+  name: chronos
   chronos_model_id: amazon/chronos-2
   device_map: cpu
   dropout: 0.1

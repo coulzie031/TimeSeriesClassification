@@ -23,14 +23,14 @@ def build_model(
             width=baseline_width,
             dropout=dropout,
         )
-    if model_name == "chronos_tsfm":
+    if model_name == "chronos":
         return ChronosAdapterClassifier(
             num_classes=num_classes,
             chronos_model_id=chronos_model_id,
             device_map=device_map,
             dropout=dropout,
         )
-    if model_name == "moment_tsfm":
+    if model_name == "moment":
         return MomentAdapterClassifier(
             num_classes=num_classes,
             dropout=dropout,
