@@ -348,6 +348,9 @@ def main() -> None:
         )
 
     p_ensemble = sum(w * p for w, p in zip(weights, all_probs))
+    # Floating-point accumulation of float32 * float64 can leave row sums
+    # marginally off 1.0, causing sklearn's log_loss to warn.
+    p_ensemble /= p_ensemble.sum(axis=1, keepdims=True)
     ens_metrics = classification_metrics(y_np, p_ensemble)
 
     print("\n── Ensemble result ──────────────────────────────────────")
