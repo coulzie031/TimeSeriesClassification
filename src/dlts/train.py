@@ -272,6 +272,7 @@ def run_stage(
         log_dict = {f"val/{k}": v for k, v in val_metrics.items()}
         log_dict[f"{stage_name}/train_loss"] = float(np.mean(losses))
         log_dict[f"{stage_name}/lr"] = scheduler.get_last_lr()[0]
+        log_dict["epoch"] = epoch + 1
         wandb.log(log_dict)
 
         macro_f1 = val_metrics["macro_f1"]
@@ -303,6 +304,7 @@ def run_stage(
 
         model.train()
 
+    wandb.run.summary[f"{stage_name}/best_val_macro_f1"] = best_f1
     return best_f1, saved_checkpoint
 
 
