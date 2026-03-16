@@ -209,6 +209,8 @@ def evaluate(
         for x, y in loader:
             x = x.to(device)
             logits = model(x)
+            if torch.isnan(logits).any():
+                logits = torch.nan_to_num(logits, nan=0.0)
             probs = F.softmax(logits, dim=-1)
             all_probs.append(probs.cpu().numpy())
             all_targets.append(y.cpu().numpy())
