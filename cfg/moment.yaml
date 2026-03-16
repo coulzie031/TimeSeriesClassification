@@ -4,7 +4,7 @@ batch_size: 48
 
 model:
   name: moment
-  dropout: 0.1
+  dropout: 0.2
   unfreeze_last_n: 3
 
 loss:

@@ -1,7 +1,7 @@
 # Baseline CNN — trains from scratch, no foundation model.
 model:
   name: baseline_cnn
-  dropout: 0.1
+  dropout: 0.2
   baseline_width: 128
 
 loss:

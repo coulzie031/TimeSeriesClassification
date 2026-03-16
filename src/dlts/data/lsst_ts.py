@@ -15,26 +15,40 @@ class TSMetadata:
     class_labels: list[int]
 
 
+def _fill_nan(X: np.ndarray) -> np.ndarray:
+    """Forward-fill, backward-fill, then zero-fill NaN along the time axis."""
+    X = X.copy()
+    for i in range(X.shape[0]):
+        for c in range(X.shape[2]):
+            col = X[i, :, c]
+            mask = np.isnan(col)
+            if not mask.any():
+                continue
+            idx = np.where(~mask, np.arange(len(col)), 0)
+            np.maximum.accumulate(idx, out=idx)
+            col = col[idx]
+            mask = np.isnan(col)
+            idx = np.where(~mask, np.arange(len(col)), len(col) - 1)
+            idx = np.minimum.accumulate(idx[::-1])[::-1]
+            col = col[idx]
+            X[i, :, c] = np.nan_to_num(col, nan=0.0)
+    return X
+
+
 def _normalize_dataset(
     X_train: np.ndarray,
     X_test: np.ndarray,
     eps: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Canonical UEA-style per-instance, per-channel z-normalization."""
+    """Global per-channel z-normalization fit on training data."""
     X_train = X_train.astype(np.float32)
     X_test = X_test.astype(np.float32)
 
-    mean_train = np.mean(X_train, axis=1, keepdims=True)
-    std_train = np.std(X_train, axis=1, keepdims=True)
-    scale_train = np.maximum(std_train, eps)
-    X_train_norm = (X_train - mean_train) / scale_train
+    mean = X_train.mean(axis=(0, 1), keepdims=True)
+    std = X_train.std(axis=(0, 1), keepdims=True)
+    scale = np.maximum(std, eps)
 
-    mean_test = np.mean(X_test, axis=1, keepdims=True)
-    std_test = np.std(X_test, axis=1, keepdims=True)
-    scale_test = np.maximum(std_test, eps)
-    X_test_norm = (X_test - mean_test) / scale_test
-
-    return X_train_norm, X_test_norm
+    return (X_train - mean) / scale, (X_test - mean) / scale
 
 
 def _encode_labels(
@@ -55,6 +69,9 @@ def load_lsst(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, TSMetadata]:
     ds = UCR_UEA_datasets()
     X_train, y_train_raw, X_test, y_test_raw = ds.load_dataset("LSST")
+
+    X_train = _fill_nan(X_train)
+    X_test = _fill_nan(X_test)
 
     y_train, y_test, labels = _encode_labels(y_train_raw, y_test_raw)
 

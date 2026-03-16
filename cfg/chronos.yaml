@@ -6,7 +6,7 @@ model:
   name: chronos
   chronos_model_id: amazon/chronos-2
   device_map: cuda
-  dropout: 0.1
+  dropout: 0.2
   unfreeze_last_n: 3
 
 loss:

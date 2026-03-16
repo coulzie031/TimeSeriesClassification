@@ -12,7 +12,7 @@ data:
 
 model:
   name: baseline_cnn
-  dropout: 0.1
+  dropout: 0.2
   unfreeze_last_n: 0
   baseline_width: 128
   chronos_model_id: amazon/chronos-2

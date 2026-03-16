@@ -35,6 +35,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
 
     parser.add_argument("--data.normalize", type=bool, default=True)
@@ -46,7 +47,7 @@ def build_parser() -> ArgumentParser:
         default="baseline_cnn",
         choices=["baseline_cnn", "chronos", "moment"],
     )
-    parser.add_argument("--model.dropout", type=float, default=0.1)
+    parser.add_argument("--model.dropout", type=float, default=0.2)
     parser.add_argument("--model.unfreeze_last_n", type=int, default=2)
     parser.add_argument("--model.baseline_width", type=int, default=128)
     parser.add_argument(
@@ -213,6 +214,7 @@ def run_stage(
     stage_cfg: StageConfig,
     head_lr_scale: float = 1.0,
     grad_clip: float = 1.0,
+    patience: int = 5,
     checkpoint_path: Path | None = None,
     class_weights: np.ndarray | None = None,
 ) -> tuple[float, bool]:
@@ -226,6 +228,7 @@ def run_stage(
     )
     scaler = torch.amp.GradScaler(device.type, enabled=device.type in ["cuda", "mps"])
     best_f1 = 0.0
+    epochs_without_improvement = 0
     saved_checkpoint = False
     model.train()
     for epoch in range(stage_cfg.epochs):
@@ -261,10 +264,13 @@ def run_stage(
         macro_f1 = val_metrics["macro_f1"]
         if macro_f1 > best_f1:
             best_f1 = macro_f1
+            epochs_without_improvement = 0
             if checkpoint_path is not None:
                 checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(model.state_dict(), checkpoint_path)
                 saved_checkpoint = True
+        else:
+            epochs_without_improvement += 1
 
         print(
             f"[{stage_name}] epoch={epoch + 1}/{stage_cfg.epochs} "
@@ -275,6 +281,13 @@ def run_stage(
             f"val_logloss={val_metrics['log_loss']:.4f} "
             f"best_val_f1={best_f1:.4f}"
         )
+
+        if patience > 0 and epochs_without_improvement >= patience:
+            print(
+                f"[{stage_name}] Early stopping: no improvement for {patience} epochs."
+            )
+            break
+
         model.train()
 
     return best_f1, saved_checkpoint
@@ -391,6 +404,7 @@ def main() -> None:
             ),
             head_lr_scale=1.0,
             grad_clip=cfg.grad_clip,
+            patience=cfg.early_stopping_patience,
             checkpoint_path=stage1_ckpt,
             class_weights=class_weights_np,
         )
@@ -412,6 +426,7 @@ def main() -> None:
             ),
             head_lr_scale=cfg.stage2.head_lr_scale,
             grad_clip=cfg.grad_clip,
+            patience=cfg.early_stopping_patience,
             checkpoint_path=stage2_ckpt,
             class_weights=class_weights_np,
         )
@@ -431,6 +446,7 @@ def main() -> None:
             ),
             head_lr_scale=1.0,
             grad_clip=cfg.grad_clip,
+            patience=cfg.early_stopping_patience,
             checkpoint_path=stage1_ckpt,
             class_weights=class_weights_np,
         )
