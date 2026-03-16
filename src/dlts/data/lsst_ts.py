@@ -16,21 +16,23 @@ class TSMetadata:
 
 
 def _normalize_dataset(
-    X_train: np.ndarray, X_test: np.ndarray, eps: float = 1e-6
+    X_train: np.ndarray,
+    X_test: np.ndarray,
+    eps: float = 1e-8,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Robust per-instance z-score normalization across all channels."""
+    """Canonical UEA-style per-instance, per-channel z-normalization."""
     X_train = X_train.astype(np.float32)
     X_test = X_test.astype(np.float32)
 
-    med_train = np.median(X_train, axis=(1, 2), keepdims=True)
-    mad_train = np.median(np.abs(X_train - med_train), axis=(1, 2), keepdims=True)
-    scale_train = np.maximum(mad_train * 1.4826, eps)
-    X_train_norm = (X_train - med_train) / scale_train
+    mean_train = np.mean(X_train, axis=1, keepdims=True)
+    std_train = np.std(X_train, axis=1, keepdims=True)
+    scale_train = np.maximum(std_train, eps)
+    X_train_norm = (X_train - mean_train) / scale_train
 
-    med_test = np.median(X_test, axis=(1, 2), keepdims=True)
-    mad_test = np.median(np.abs(X_test - med_test), axis=(1, 2), keepdims=True)
-    scale_test = np.maximum(mad_test * 1.4826, eps)
-    X_test_norm = (X_test - med_test) / scale_test
+    mean_test = np.mean(X_test, axis=1, keepdims=True)
+    std_test = np.std(X_test, axis=1, keepdims=True)
+    scale_test = np.maximum(std_test, eps)
+    X_test_norm = (X_test - mean_test) / scale_test
 
     return X_train_norm, X_test_norm
 
