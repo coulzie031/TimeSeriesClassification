@@ -97,7 +97,7 @@ class ChronosAdapterClassifier(nn.Module):
 
         model_device = next(self.chronos_model.parameters()).device
 
-        # Batch all channels into one encode call: (B, T, C) → (B*C, T)
+        # Batch all channels into one encode call: (B, T, C) -> (B*C, T)
         flat = rearrange(x, "b t c -> (b c) t").float().to(model_device)
         encoder_outputs, _, _, num_ctx_patches = self.chronos_model.encode(flat)
         hidden = encoder_outputs.last_hidden_state  # (B*C, P, H)
