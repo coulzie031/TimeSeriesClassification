@@ -254,7 +254,7 @@ class UniTSClassifier(nn.Module):
         seq = torch.cat([task, channels], dim=1)  # (B, C+1, d_model)
         seq_n = self.norm_task(seq)
         h2, _ = self.task_attn(seq_n, seq_n, seq_n)
-        seq = seq + h2                             # Pre-LN residual
+        seq = seq + h2  # Pre-LN residual
 
         return seq[:, 0]  # (B, d_model) — task token
 
