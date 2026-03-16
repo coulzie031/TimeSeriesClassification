@@ -10,6 +10,8 @@ data:
   normalize: true
   val_fraction: 0.2
   augment: true
+  mixup_alpha: 0.3
+  weighted_sampler: true
 
 model:
   name: patch_tst
@@ -25,6 +27,7 @@ model:
 
 loss:
   label_smoothing: 0.1
+  focal_gamma: 2.0
 
 # From-scratch: 200 epochs, patience=25 (12.5% of budget).
 stage1:

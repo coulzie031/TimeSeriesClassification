@@ -12,10 +12,10 @@ import wandb
 from jsonargparse import ArgumentParser
 from sklearn.model_selection import StratifiedShuffleSplit
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from dlts.data.lsst_ts import LSSTDataset, load_lsst
-from dlts.losses import inverse_frequency_class_weights
+from dlts.losses import FocalLoss, inverse_frequency_class_weights
 from dlts.metrics import classification_metrics
 from dlts.models.factory import build_model
 
@@ -69,6 +69,9 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--model.device_map", type=str, default=None)
 
     parser.add_argument("--loss.label_smoothing", type=float, default=0.1)
+    parser.add_argument("--loss.focal_gamma", type=float, default=2.0)
+    parser.add_argument("--data.mixup_alpha", type=float, default=0.3)
+    parser.add_argument("--data.weighted_sampler", type=bool, default=True)
 
     # Stage 1: head only (frozen backbone)
     parser.add_argument("--stage1.epochs", type=int, default=10)
@@ -219,6 +222,21 @@ def evaluate(
     return classification_metrics(y_np, probs_np, class_weights=class_weights)
 
 
+def apply_mixup(
+    x: torch.Tensor, y: torch.Tensor, alpha: float, num_classes: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """MixUp: returns (mixed_x, soft_labels)."""
+    lam = float(np.random.beta(alpha, alpha))
+    idx = torch.randperm(x.size(0), device=x.device)
+    x_mix = lam * x + (1 - lam) * x[idx]
+    y_soft = lam * F.one_hot(y, num_classes).float() + (1 - lam) * F.one_hot(y[idx], num_classes).float()
+    return x_mix, y_soft
+
+
+def soft_cross_entropy(logits: torch.Tensor, y_soft: torch.Tensor) -> torch.Tensor:
+    return -(y_soft * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+
+
 def run_stage(
     model: nn.Module,
     train_loader: DataLoader,
@@ -232,6 +250,8 @@ def run_stage(
     patience: int = 5,
     checkpoint_path: Path | None = None,
     class_weights: np.ndarray | None = None,
+    mixup_alpha: float = 0.0,
+    num_classes: int = 14,
 ) -> tuple[float, bool]:
     """Returns (best val macro_f1, checkpoint_saved_for_this_stage)."""
     optimizer = make_optimizer(model, stage_cfg, head_lr_scale=head_lr_scale)
@@ -256,8 +276,13 @@ def run_stage(
             with torch.autocast(
                 device_type=device.type, enabled=device.type in ["cuda", "mps"]
             ):
-                logits = model(x)
-                loss = criterion(logits, y)
+                if mixup_alpha > 0.0:
+                    x_mix, y_soft = apply_mixup(x, y, mixup_alpha, num_classes)
+                    logits = model(x_mix)
+                    loss = soft_cross_entropy(logits, y_soft)
+                else:
+                    logits = model(x)
+                    loss = criterion(logits, y)
 
             scaler.scale(loss).backward()
 
@@ -349,12 +374,31 @@ def main() -> None:
         num_workers=effective_num_workers,
         pin_memory=False,  # Not needed if data is already on device
     )
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg.batch_size,
-        shuffle=True,
-        **loader_kwargs,
-    )
+
+    # WeightedRandomSampler: ensures minority classes appear in every batch.
+    _num_classes_early = len(meta.class_labels)
+    _y_t = torch.from_numpy(y_train)
+    _cw = inverse_frequency_class_weights(_y_t, num_classes=_num_classes_early)
+    _sample_w = _cw[_y_t]
+    if cfg.data.weighted_sampler:
+        sampler = WeightedRandomSampler(
+            weights=_sample_w.float(),
+            num_samples=len(y_train),
+            replacement=True,
+        )
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=cfg.batch_size,
+            sampler=sampler,
+            **loader_kwargs,
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=cfg.batch_size,
+            shuffle=True,
+            **loader_kwargs,
+        )
     val_loader = DataLoader(
         val_ds,
         batch_size=cfg.batch_size,
@@ -397,9 +441,12 @@ def main() -> None:
     ).to(device)
     class_weights_np = class_weights.cpu().numpy()
 
-    criterion: nn.Module = nn.CrossEntropyLoss(
-        weight=class_weights, label_smoothing=cfg.loss.label_smoothing
-    )
+    if cfg.loss.focal_gamma > 0:
+        criterion: nn.Module = FocalLoss(alpha=class_weights, gamma=cfg.loss.focal_gamma)
+    else:
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weights, label_smoothing=cfg.loss.label_smoothing
+        )
 
     # ── W&B ───────────────────────────────────────────────────────────
     wandb.init(
@@ -439,6 +486,8 @@ def main() -> None:
             patience=cfg.early_stopping_patience,
             checkpoint_path=stage1_ckpt,
             class_weights=class_weights_np,
+            mixup_alpha=cfg.data.mixup_alpha,
+            num_classes=num_classes,
         )
 
         # ── Stage 2: Fine-Tuning ─────────────────────────────────────
@@ -461,6 +510,8 @@ def main() -> None:
             patience=cfg.early_stopping_patience,
             checkpoint_path=stage2_ckpt,
             class_weights=class_weights_np,
+            mixup_alpha=cfg.data.mixup_alpha,
+            num_classes=num_classes,
         )
     else:
         print(f"\n>>> [SCRATCH] Training {cfg.model.name} end-to-end")
@@ -481,6 +532,8 @@ def main() -> None:
             patience=cfg.early_stopping_patience,
             checkpoint_path=stage1_ckpt,
             class_weights=class_weights_np,
+            mixup_alpha=cfg.data.mixup_alpha,
+            num_classes=num_classes,
         )
 
     # ── Final eval on held-out test set ────────────────────────────────

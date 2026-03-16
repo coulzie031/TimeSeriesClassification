@@ -66,13 +66,18 @@ def _get_probs(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
+    n_tta: int = 1,
 ) -> np.ndarray:
+    """Run inference with optional Test-Time Augmentation (n_tta passes)."""
     model.eval()
-    batches = []
-    for x, _ in loader:
-        logits = model(x.to(device))
-        batches.append(F.softmax(logits, dim=-1).cpu().numpy())
-    return np.concatenate(batches, axis=0)
+    all_passes = []
+    for _ in range(n_tta):
+        batches = []
+        for x, _ in loader:
+            logits = model(x.to(device))
+            batches.append(F.softmax(logits, dim=-1).cpu().numpy())
+        all_passes.append(np.concatenate(batches, axis=0))
+    return np.mean(all_passes, axis=0)
 
 
 def _load_member(record: dict, device: torch.device) -> torch.nn.Module:
@@ -248,6 +253,12 @@ def main() -> None:
         default=True,
         help="Apply dataset-level z-normalisation (should match training).",
     )
+    parser.add_argument(
+        "--n_tta",
+        type=int,
+        default=5,
+        help="Number of Test-Time Augmentation passes (1 = no TTA).",
+    )
     args = parser.parse_args()
 
     # ── Device ────────────────────────────────────────────────────────
@@ -300,9 +311,11 @@ def main() -> None:
     # ── Data ──────────────────────────────────────────────────────────
     print("\nLoading LSST test set...")
     _, _, X_test, y_test, meta = load_lsst(normalize=args.normalize)
-    test_ds = LSSTDataset(X_test, y_test)
+    # augment=True enables TTA (random jitter/scale per pass); augment=False for single pass
+    test_ds = LSSTDataset(X_test, y_test, augment=(args.n_tta > 1))
     test_ldr = DataLoader(test_ds, batch_size=256, shuffle=False)
     y_np = y_test
+    print(f"TTA: {args.n_tta} pass(es)")
 
     # ── Collect per-model probabilities ──────────────────────────────
     all_probs: list[np.ndarray] = []
@@ -313,7 +326,7 @@ def main() -> None:
     for r in eligible:
         print(f"Loading  {r['model_name']:20s}  val_f1={r['val_macro_f1']:.4f} ...")
         model = _load_member(r, device)
-        probs = _get_probs(model, test_ldr, device)
+        probs = _get_probs(model, test_ldr, device, n_tta=args.n_tta)
 
         m = classification_metrics(y_np, probs)
         print(
