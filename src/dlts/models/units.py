@@ -115,27 +115,28 @@ class UniTSBlock(nn.Module):
 
     def forward(self, x: Tensor, B: int, C: int) -> Tensor:
         # x: (B*C, P, d)
-        P = x.shape[1]
-        d = x.shape[2]
+        # Pre-LN: x = x + f(norm(x)) — residual stream stays unnormalised,
+        # preventing activation blow-up across blocks.
+        P, d = x.shape[1], x.shape[2]
 
         # ── 1. Sequence attention (temporal, within each channel) ─────────────
-        h, _ = self.seq_attn(x, x, x)
-        x = self.norm1(x + self.dropout(h))
+        xn = self.norm1(x)
+        h, _ = self.seq_attn(xn, xn, xn)
+        x = x + self.dropout(h)
 
         # ── 2. Variable attention (cross-channel) ─────────────────────────────
-        # Pool patches -> one representative vector per channel: (B, C, d)
-        channel_repr = x.reshape(B, C, P, d).mean(dim=2)
+        # Pool normed patches -> one representative vector per channel: (B, C, d)
+        channel_repr = self.norm2(x).reshape(B, C, P, d).mean(dim=2)
         h, _ = self.var_attn(channel_repr, channel_repr, channel_repr)
-        channel_repr = self.norm2(channel_repr + self.dropout(h))  # (B, C, d)
         # Broadcast the cross-channel correction back to every patch
-        x = x + channel_repr.reshape(B * C, 1, d)  # (B*C, P, d)
+        x = x + self.dropout(h).reshape(B * C, 1, d)
 
         # ── 3. DLO (dense time mixing) ────────────────────────────────────────
-        h = self.dlo(x)
-        x = self.norm3(x + self.dropout(h))
+        h = self.dlo(self.norm3(x))
+        x = x + self.dropout(h)
 
         # ── 4. FFN ────────────────────────────────────────────────────────────
-        x = self.norm4(x + self.ffn(x))
+        x = x + self.ffn(self.norm4(x))
 
         return x
 
@@ -251,8 +252,9 @@ class UniTSClassifier(nn.Module):
         # Prepend [TASK] token, let it attend over all channel representations
         task = self.task_token.expand(B, -1, -1)  # (B, 1, d_model)
         seq = torch.cat([task, channels], dim=1)  # (B, C+1, d_model)
-        h2, _ = self.task_attn(seq, seq, seq)
-        seq = self.norm_task(seq + h2)
+        seq_n = self.norm_task(seq)
+        h2, _ = self.task_attn(seq_n, seq_n, seq_n)
+        seq = seq + h2                             # Pre-LN residual
 
         return seq[:, 0]  # (B, d_model) — task token
 
