@@ -13,9 +13,9 @@ data:
 
 model:
   name: inception_time
-  dropout: 0.2
+  dropout: 0.3
   unfreeze_last_n: 0
-  inception_nb_filters: 32
+  inception_nb_filters: 64
 
 loss:
   label_smoothing: 0.1
@@ -24,7 +24,7 @@ loss:
 stage1:
   epochs: 200
   lr: 1.0e-3
-  weight_decay: 1.0e-4
+  weight_decay: 1.0e-3
 
 stage2:
   epochs: 0

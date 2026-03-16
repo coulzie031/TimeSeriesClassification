@@ -14,7 +14,7 @@ data:
 model:
   name: chronos
   dropout: 0.2
-  unfreeze_last_n: 3
+  unfreeze_last_n: 4
   chronos_model_id: amazon/chronos-2
   device_map: null
 
@@ -33,9 +33,9 @@ stage1:
 # to recover from the initial disruption of unfreezing.
 stage2:
   epochs: 50
-  lr: 1.0e-5
+  lr: 3.0e-5
   weight_decay: 1.0e-4
-  head_lr_scale: 8.0
+  head_lr_scale: 10.0
 
 wandb:
   project: lsst-tsfm
