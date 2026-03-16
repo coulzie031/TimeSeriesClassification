@@ -1,9 +1,9 @@
 seed: 42
 device: auto
 num_workers: 2
-batch_size: 128
+batch_size: 64
 grad_clip: 1.0
-early_stopping_patience: 25
+early_stopping_patience: 40
 checkpoint_dir: checkpoints
 
 data:
@@ -15,19 +15,18 @@ data:
 
 model:
   name: inception_time
-  dropout: 0.3
+  dropout: 0.2
   unfreeze_last_n: 0
-  inception_nb_filters: 64
+  inception_nb_filters: 128
 
 loss:
-  label_smoothing: 0.1
+  label_smoothing: 0.05
   focal_gamma: 2.0
 
-# From-scratch: 200 epochs, patience=25 (12.5% of budget).
 stage1:
-  epochs: 200
-  lr: 1.0e-3
-  weight_decay: 1.0e-3
+  epochs: 300
+  lr: 5.0e-4
+  weight_decay: 5.0e-4
 
 stage2:
   epochs: 0
@@ -38,5 +37,5 @@ stage2:
 wandb:
   project: lsst-tsfm
   entity: null
-  run_name: inception_time
+  run_name: inception_time_xl
   mode: offline
