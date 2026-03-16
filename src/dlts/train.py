@@ -443,7 +443,9 @@ def main() -> None:
         model.load_state_dict(torch.load(stage1_ckpt, map_location=device))
         print(f"Loaded best checkpoint (val_f1={best_val_f1:.4f})")
     else:
-        print("No checkpoint from this run was saved; evaluating current model weights.")
+        print(
+            "No checkpoint from this run was saved; evaluating current model weights."
+        )
 
     test_metrics = evaluate(model, test_loader, device, class_weights=class_weights_np)
     wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
