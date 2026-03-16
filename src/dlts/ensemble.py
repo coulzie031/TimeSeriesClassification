@@ -15,6 +15,8 @@ This script:
   4. Rebuilds each model from its saved config, loads its checkpoint.
   5. Runs inference on the LSST test set and aggregates probability vectors.
   6. Reports per-model and ensemble metrics.
+  7. Saves a per-model F1 comparison chart and a confusion matrix to
+     {checkpoint_dir}/ and prints their paths for inline display in Colab.
 
 Usage
 -----
@@ -33,9 +35,11 @@ import argparse
 import json
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 from torch.utils.data import DataLoader
 
 from dlts.data.lsst_ts import LSSTDataset, load_lsst
@@ -128,6 +132,77 @@ def _load_member(record: dict, device: torch.device) -> torch.nn.Module:
 
     model.load_state_dict(ckpt, strict=False)
     return model.to(device)
+
+
+# ── Plotting ──────────────────────────────────────────────────────────────────
+
+
+def _save_plots(
+    y_true: np.ndarray,
+    p_ensemble: np.ndarray,
+    eligible: list[dict],
+    weights: np.ndarray,
+    per_model_metrics: list[dict],
+    class_labels: list,
+    out_dir: Path,
+) -> list[Path]:
+    """
+    Save two figures to out_dir and return their paths:
+      1. per-model F1 comparison bar chart
+      2. ensemble confusion matrix
+    """
+    plt.style.use("seaborn-v0_8-whitegrid")
+    saved: list[Path] = []
+
+    # 1. Per-model F1 comparison ──────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(max(6, len(eligible) * 1.4), 5))
+    model_names = [r["model_name"] for r in eligible]
+    val_f1s  = [r["val_macro_f1"] for r in eligible]
+    test_f1s = [m["macro_f1"] for m in per_model_metrics]
+
+    x = np.arange(len(eligible))
+    w = 0.35
+    bars_val  = ax.bar(x - w/2, val_f1s,  w, label="Val macro-F1",  color="steelblue",  alpha=0.85)
+    bars_test = ax.bar(x + w/2, test_f1s, w, label="Test macro-F1", color="coral",      alpha=0.85)
+
+    for bar in (*bars_val, *bars_test):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+                f"{bar.get_height():.3f}", ha="center", va="bottom", fontsize=8)
+
+    # Annotate ensemble weight above each model pair
+    for i, wt in enumerate(weights):
+        ax.text(x[i], max(val_f1s[i], test_f1s[i]) + 0.02,
+                f"w={wt:.3f}", ha="center", fontsize=8, color="dimgray")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(model_names, rotation=20, ha="right")
+    ax.set_ylabel("Macro F1")
+    ax.set_title("Per-Model Val / Test Macro-F1 and Ensemble Weights")
+    ax.set_ylim(0, 1.08)
+    ax.legend()
+    plt.tight_layout()
+    p = out_dir / "ensemble_model_comparison.png"
+    fig.savefig(p, dpi=120)
+    plt.close(fig)
+    saved.append(p)
+
+    # 2. Ensemble confusion matrix ────────────────────────────────────────────
+    y_pred = p_ensemble.argmax(axis=1)
+    cm = confusion_matrix(y_true, y_pred)
+    n_cls = len(class_labels)
+    fig, ax = plt.subplots(figsize=(max(8, n_cls * 0.8), max(7, n_cls * 0.7)))
+    disp = ConfusionMatrixDisplay(cm, display_labels=class_labels)
+    disp.plot(ax=ax, colorbar=True, cmap="Blues", values_format="d")
+    ax.set_title("Ensemble — Confusion Matrix (Test Set)")
+    ax.set_xlabel("Predicted Class")
+    ax.set_ylabel("True Class")
+    plt.tight_layout()
+    p = out_dir / "ensemble_confusion_matrix.png"
+    fig.savefig(p, dpi=120)
+    plt.close(fig)
+    saved.append(p)
+
+    return saved
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -224,6 +299,7 @@ def main() -> None:
     # ── Collect per-model probabilities ──────────────────────────────
     all_probs: list[np.ndarray] = []
     all_val_f1s: list[float] = []
+    per_model_metrics: list[dict] = []
 
     print()
     for r in eligible:
@@ -240,6 +316,7 @@ def main() -> None:
 
         all_probs.append(probs)
         all_val_f1s.append(r["val_macro_f1"])
+        per_model_metrics.append(m)
 
         # Free GPU memory before loading the next model.
         del model
@@ -266,6 +343,41 @@ def main() -> None:
         f"  Log-Loss          : {ens_metrics['log_loss']:.4f}"
     )
 
+    # Per-class F1 breakdown (critical for imbalanced LSST)
+    from sklearn.metrics import f1_score
+
+    y_pred = p_ensemble.argmax(axis=1)
+    per_class_f1 = f1_score(y_np, y_pred, average=None)
+    unique_classes, class_counts = np.unique(y_np, return_counts=True)
+    count_map = dict(zip(unique_classes, class_counts))
+
+    print("\n── Per-class F1 (test) ──────────────────────────────────")
+    print(f"  {'Class':>8}  {'F1':>6}  {'Support':>8}")
+    print(f"  {'-'*8}  {'-'*6}  {'-'*8}")
+    for cls_idx, f1 in zip(unique_classes, per_class_f1):
+        label = meta.class_labels[cls_idx]
+        n = count_map.get(cls_idx, 0)
+        print(f"  {str(label):>8}  {f1:.4f}  {n:>8d}")
+    print(f"  {'-'*8}  {'-'*6}  {'-'*8}")
+    print(f"  {'macro':>8}  {per_class_f1.mean():.4f}  {len(y_np):>8d}")
+
+    # ── Save plots ────────────────────────────────────────────────────
+    plot_paths = _save_plots(
+        y_true=y_np,
+        p_ensemble=p_ensemble,
+        eligible=eligible,
+        weights=weights,
+        per_model_metrics=per_model_metrics,
+        class_labels=meta.class_labels,
+        out_dir=ckpt_dir,
+    )
+    print("\nPlots saved:")
+    for p in plot_paths:
+        print(f"  {p}")
+    print("\n# To display in Colab after this cell, run:")
+    for p in plot_paths:
+        print(f'#   IPython.display.display(IPython.display.Image("{p}"))')
+
     # ── Save result ───────────────────────────────────────────────────
     result = {
         "members": [
@@ -282,8 +394,13 @@ def main() -> None:
             for r in excluded
         ],
         "ensemble_metrics": ens_metrics,
+        "per_class_f1": {
+            str(meta.class_labels[cls_idx]): float(f1)
+            for cls_idx, f1 in zip(unique_classes, per_class_f1)
+        },
         "min_val_f1": args.min_val_f1,
         "temperature": args.temperature,
+        "plots": [str(p) for p in plot_paths],
     }
     out_path = ckpt_dir / "ensemble_result.json"
     with open(out_path, "w") as f:
