@@ -178,19 +178,12 @@ def _save_plots(
             fontsize=8,
         )
 
-    # Annotate ensemble weight above each model pair
-    for i, wt in enumerate(weights):
-        ax.text(
-            x[i],
-            max(val_f1s[i], test_f1s[i]) + 0.02,
-            f"w={wt:.3f}",
-            ha="center",
-            fontsize=8,
-            color="dimgray",
-        )
-
     ax.set_xticks(x)
-    ax.set_xticklabels(model_names, rotation=20, ha="right")
+    ax.set_xticklabels(
+        [f"{name}\n(w={wt:.3f})" for name, wt in zip(model_names, weights)],
+        rotation=20,
+        ha="right",
+    )
     ax.set_ylabel("Macro F1")
     ax.set_title("Per-Model Val / Test Macro-F1 and Ensemble Weights")
     ax.set_ylim(0, 1.08)
